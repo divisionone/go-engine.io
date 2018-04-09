@@ -4,9 +4,9 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/googollee/go-engine.io/message"
-	"github.com/googollee/go-engine.io/parser"
-	"github.com/googollee/go-engine.io/transport"
+	"github.com/divisionone/go-engine.io/message"
+	"github.com/divisionone/go-engine.io/parser"
+	"github.com/divisionone/go-engine.io/transport"
 	"github.com/gorilla/websocket"
 )
 
@@ -16,9 +16,23 @@ type Server struct {
 }
 
 func NewServer(w http.ResponseWriter, r *http.Request, callback transport.Callback) (transport.Server, error) {
-	conn, err := websocket.Upgrade(w, r, nil, 10240, 10240)
+	compress := true
+
+	var upgrader = websocket.Upgrader{
+		ReadBufferSize:  10240,
+		WriteBufferSize: 10240,
+		EnableCompression: compress,
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return nil, err
+	}
+
+	if compress {
+		conn.EnableWriteCompression(true)
+		conn.SetCompressionLevel(1)
 	}
 
 	ret := &Server{

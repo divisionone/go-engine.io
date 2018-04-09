@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/googollee/go-engine.io/message"
-	"github.com/googollee/go-engine.io/parser"
-	"github.com/googollee/go-engine.io/transport"
+	"github.com/divisionone/go-engine.io/message"
+	"github.com/divisionone/go-engine.io/parser"
+	"github.com/divisionone/go-engine.io/transport"
 )
 
 type MessageType message.MessageType
@@ -242,6 +242,13 @@ func (c *serverConn) OnPacket(r *parser.PacketDecoder) {
 	}
 }
 
+func safeRun(fn func()) {
+	defer func() {
+		recover()
+	}()
+	fn()
+}
+
 func (c *serverConn) OnClose(server transport.Server) {
 	if t := c.getUpgrade(); server == t {
 		c.setUpgrading("", nil)
@@ -258,9 +265,9 @@ func (c *serverConn) OnClose(server transport.Server) {
 		c.setUpgrading("", nil)
 	}
 	c.setState(stateClosed)
-	close(c.readerChan)
+	safeRun(func() { close(c.readerChan) })
 	c.pingLocker.Lock()
-	close(c.pingChan)
+	safeRun(func() { close(c.pingChan) })
 	c.pingLocker.Unlock()
 	c.callback.onClose(c.id)
 }
