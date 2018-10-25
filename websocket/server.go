@@ -19,10 +19,10 @@ func NewServer(w http.ResponseWriter, r *http.Request, callback transport.Callba
 	compress := true
 
 	var upgrader = websocket.Upgrader{
-		ReadBufferSize:  10240,
-		WriteBufferSize: 10240,
+		ReadBufferSize:    10240,
+		WriteBufferSize:   10240,
 		EnableCompression: compress,
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:       func(r *http.Request) bool { return true },
 	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)

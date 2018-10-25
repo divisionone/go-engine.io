@@ -3,12 +3,13 @@ package polling
 import (
 	"bytes"
 	"fmt"
-	"github.com/divisionone/go-engine.io/message"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/divisionone/go-engine.io/message"
 
 	"github.com/divisionone/go-engine.io/parser"
 	"github.com/divisionone/go-engine.io/transport"
