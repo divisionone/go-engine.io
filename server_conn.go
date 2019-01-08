@@ -122,17 +122,33 @@ func (c *serverConn) Request() *http.Request {
 }
 
 func (c *serverConn) NextReader() (MessageType, io.ReadCloser, error) {
+	switch c.getState() {
+	case stateClosed, stateClosing:
+		return MessageBinary, nil, io.EOF
+	}
+	/* was
 	if c.getState() == stateClosed {
 		return MessageBinary, nil, io.EOF
 	}
-	ret := <-c.readerChan
-	if ret == nil {
+	*/
+	select {
+	case ret := <-c.readerChan:
+		if ret == nil {
+			return MessageBinary, nil, io.EOF
+		}
+		return MessageType(ret.MessageType()), ret, nil
+	case <-time.After(300 * time.Second): // if there is nothing at all for 5 mins, kill the connection
+		fmt.Println(">>>> 5 minute timeout, connection killed <<<<")
+		c.Close()
 		return MessageBinary, nil, io.EOF
 	}
-	return MessageType(ret.MessageType()), ret, nil
+	return MessageBinary, nil, io.EOF
 }
 
 func (c *serverConn) NextWriter(t MessageType) (io.WriteCloser, error) {
+	if c == nil {
+		return nil, fmt.Errorf("called nextWriter on nil serverConn NOT HEALTHY")
+	}
 	switch c.getState() {
 	case stateUpgrading:
 		for i := 0; i < 30; i++ {
@@ -149,6 +165,13 @@ func (c *serverConn) NextWriter(t MessageType) (io.WriteCloser, error) {
 		return nil, io.EOF
 	}
 	c.writerLocker.Lock()
+	// we got a crash that looks like this
+	// (*serverConn).NextWriter(0xc42161fc70, 0x0, 0xc42462fcb0, 0x403355, 0xc420b90960, 0xc42462fcd0)
+
+	if curr := c.getCurrent(); curr == nil {
+		return nil, fmt.Errorf("current is nil, NOT HEALTHY")
+	}
+
 	ret, err := c.getCurrent().NextWriter(message.MessageType(t), parser.MESSAGE)
 	if err != nil {
 		c.writerLocker.Unlock()
@@ -339,6 +362,12 @@ func (c *serverConn) setUpgrading(name string, s transport.Server) {
 
 func (c *serverConn) upgraded() {
 	c.transportLocker.Lock()
+
+	//  prevent double upgrade from killing the connection
+	if c.upgrading == nil {
+		c.transportLocker.Unlock()
+		return
+	}
 
 	current := c.current
 	c.current = c.upgrading
