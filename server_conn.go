@@ -75,6 +75,7 @@ type serverConn struct {
 	state           state
 	stateLocker     sync.RWMutex
 	readerChan      chan *connReader
+	readerShutdown  chan bool
 	pingTimeout     time.Duration
 	pingInterval    time.Duration
 	pingChan        chan bool
@@ -90,14 +91,15 @@ func newServerConn(id string, w http.ResponseWriter, r *http.Request, callback s
 		return nil, InvalidError
 	}
 	ret := &serverConn{
-		id:           id,
-		request:      r,
-		callback:     callback,
-		state:        stateNormal,
-		readerChan:   make(chan *connReader),
-		pingTimeout:  callback.configure().PingTimeout,
-		pingInterval: callback.configure().PingInterval,
-		pingChan:     make(chan bool),
+		id:             id,
+		request:        r,
+		callback:       callback,
+		state:          stateNormal,
+		readerChan:     make(chan *connReader),
+		readerShutdown: make(chan bool),
+		pingTimeout:    callback.configure().PingTimeout,
+		pingInterval:   callback.configure().PingInterval,
+		pingChan:       make(chan bool),
 	}
 	transport, err := creater.Server(w, r, ret)
 	if err != nil {
@@ -137,9 +139,8 @@ func (c *serverConn) NextReader() (MessageType, io.ReadCloser, error) {
 			return MessageBinary, nil, io.EOF
 		}
 		return MessageType(ret.MessageType()), ret, nil
-	case <-time.After(300 * time.Second): // if there is nothing at all for 5 mins, kill the connection
-		fmt.Println(">>>> 5 minute timeout, connection killed <<<<")
-		c.Close()
+	case <-c.readerClosed:
+		fmt.Println("underlying socket has closed, and we missed the memo !!")
 		return MessageBinary, nil, io.EOF
 	}
 	return MessageBinary, nil, io.EOF
@@ -182,7 +183,9 @@ func (c *serverConn) NextWriter(t MessageType) (io.WriteCloser, error) {
 }
 
 func (c *serverConn) Close() error {
-	if c.getState() != stateNormal && c.getState() != stateUpgrading {
+	s := c.getState()
+	switch s {
+	case stateNormal, stateUpgrading:
 		return nil
 	}
 	if c.upgrading != nil {
@@ -199,6 +202,7 @@ func (c *serverConn) Close() error {
 		return err
 	}
 	c.setState(stateClosing)
+	c.readerShutdown <- true
 	return nil
 }
 
