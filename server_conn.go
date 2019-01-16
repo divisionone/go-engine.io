@@ -202,7 +202,13 @@ func (c *serverConn) Close() error {
 		return err
 	}
 	c.setState(stateClosing)
-	c.readerShutdown <- true
+	select {
+			c.readerShutdown <- true:
+			// signal the nextReader to stop waiting for data that will never arrive.
+	default:
+			// we already have signalled that the reader should quit
+	}
+
 	return nil
 }
 
