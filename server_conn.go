@@ -139,7 +139,7 @@ func (c *serverConn) NextReader() (MessageType, io.ReadCloser, error) {
 			return MessageBinary, nil, io.EOF
 		}
 		return MessageType(ret.MessageType()), ret, nil
-	case <-c.readerClosed:
+	case <-c.readerShutdown:
 		fmt.Println("underlying socket has closed, and we missed the memo !!")
 		return MessageBinary, nil, io.EOF
 	}
@@ -203,10 +203,10 @@ func (c *serverConn) Close() error {
 	}
 	c.setState(stateClosing)
 	select {
-			c.readerShutdown <- true:
-			// signal the nextReader to stop waiting for data that will never arrive.
+	case c.readerShutdown <- true:
+		// signal the nextReader to stop waiting for data that will never arrive.
 	default:
-			// we already have signalled that the reader should quit
+		// we already have signalled that the reader should quit
 	}
 
 	return nil
