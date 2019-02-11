@@ -133,6 +133,12 @@ func (c *serverConn) NextReader() (MessageType, io.ReadCloser, error) {
 }
 
 func (c *serverConn) NextWriter(t MessageType) (io.WriteCloser, error) {
+	// we got a crash that looks like this
+	// (*serverConn).NextWriter(0xc42161fc70, 0x0, 0xc42462fcb0, 0x403355, 0xc420b90960, 0xc42462fcd0)
+	// so its possible that c is nil
+	if c == nil {
+		return nil, fmt.Errorf("called nextWriter on nil serverConn NOT HEALTHY")
+	}
 	switch c.getState() {
 	case stateUpgrading:
 		for i := 0; i < 30; i++ {
@@ -149,6 +155,9 @@ func (c *serverConn) NextWriter(t MessageType) (io.WriteCloser, error) {
 		return nil, io.EOF
 	}
 	c.writerLocker.Lock()
+	if curr := c.getCurrent(); curr == nil {
+		return nil, fmt.Errorf("current is nil, NOT HEALTHY")
+	}
 	ret, err := c.getCurrent().NextWriter(message.MessageType(t), parser.MESSAGE)
 	if err != nil {
 		c.writerLocker.Unlock()
@@ -339,6 +348,11 @@ func (c *serverConn) setUpgrading(name string, s transport.Server) {
 
 func (c *serverConn) upgraded() {
 	c.transportLocker.Lock()
+	//  prevent double upgrade from killing the connection
+	if c.upgrading == nil {
+		c.transportLocker.Unlock()
+		return
+	}
 
 	current := c.current
 	c.current = c.upgrading
