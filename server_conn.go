@@ -133,9 +133,7 @@ func (c *serverConn) NextReader() (MessageType, io.ReadCloser, error) {
 }
 
 func (c *serverConn) NextWriter(t MessageType) (io.WriteCloser, error) {
-	// we got a crash that looks like this
-	// (*serverConn).NextWriter(0xc42161fc70, 0x0, 0xc42462fcb0, 0x403355, 0xc420b90960, 0xc42462fcd0)
-	// so its possible that c is nil
+	// just to be sure
 	if c == nil {
 		return nil, fmt.Errorf("called nextWriter on nil serverConn NOT HEALTHY")
 	}
@@ -158,6 +156,9 @@ func (c *serverConn) NextWriter(t MessageType) (io.WriteCloser, error) {
 	if curr := c.getCurrent(); curr == nil {
 		return nil, fmt.Errorf("current is nil, NOT HEALTHY")
 	}
+	// we got a crash that looks like this
+	// (*serverConn).NextWriter(0xc42161fc70, 0x0, 0xc42462fcb0, 0x403355, 0xc420b90960, 0xc42462fcd0)
+	// so it means that c.getCurrent() is nil. boom.
 	ret, err := c.getCurrent().NextWriter(message.MessageType(t), parser.MESSAGE)
 	if err != nil {
 		c.writerLocker.Unlock()
@@ -353,7 +354,6 @@ func (c *serverConn) upgraded() {
 		c.transportLocker.Unlock()
 		return
 	}
-
 	current := c.current
 	c.current = c.upgrading
 	c.currentName = c.upgradingName
