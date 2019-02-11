@@ -349,7 +349,8 @@ func (c *serverConn) setUpgrading(name string, s transport.Server) {
 
 func (c *serverConn) upgraded() {
 	c.transportLocker.Lock()
-	//  prevent double upgrade from killing the connection
+	// prevent double upgrade from crashing NextWriter() due to setting
+	// both current and upgrading to nil
 	if c.upgrading == nil {
 		c.transportLocker.Unlock()
 		return
