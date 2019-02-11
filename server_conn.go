@@ -75,9 +75,10 @@ type serverConn struct {
 	state           state
 	stateLocker     sync.RWMutex
 	readerChan      chan *connReader
+	readerShutdown  chan struct{}
 	pingTimeout     time.Duration
 	pingInterval    time.Duration
-	pingChan        chan bool
+	pingChan        chan struct{}
 	pingLocker      sync.Mutex
 }
 
@@ -90,14 +91,15 @@ func newServerConn(id string, w http.ResponseWriter, r *http.Request, callback s
 		return nil, InvalidError
 	}
 	ret := &serverConn{
-		id:           id,
-		request:      r,
-		callback:     callback,
-		state:        stateNormal,
-		readerChan:   make(chan *connReader),
-		pingTimeout:  callback.configure().PingTimeout,
-		pingInterval: callback.configure().PingInterval,
-		pingChan:     make(chan bool),
+		id:             id,
+		request:        r,
+		callback:       callback,
+		state:          stateNormal,
+		readerChan:     make(chan *connReader),
+		readerShutdown: make(chan struct{}),
+		pingTimeout:    callback.configure().PingTimeout,
+		pingInterval:   callback.configure().PingInterval,
+		pingChan:       make(chan struct{}),
 	}
 	transport, err := creater.Server(w, r, ret)
 	if err != nil {
@@ -122,17 +124,31 @@ func (c *serverConn) Request() *http.Request {
 }
 
 func (c *serverConn) NextReader() (MessageType, io.ReadCloser, error) {
+	switch c.getState() {
+	case stateClosed, stateClosing:
+		return MessageBinary, nil, io.EOF
+	}
+	/* was
 	if c.getState() == stateClosed {
 		return MessageBinary, nil, io.EOF
 	}
-	ret := <-c.readerChan
-	if ret == nil {
+	*/
+	select {
+	case ret := <-c.readerChan:
+		if ret == nil {
+			return MessageBinary, nil, io.EOF
+		}
+		return MessageType(ret.MessageType()), ret, nil
+	case <-c.readerShutdown:
 		return MessageBinary, nil, io.EOF
 	}
-	return MessageType(ret.MessageType()), ret, nil
+	return MessageBinary, nil, io.EOF
 }
 
 func (c *serverConn) NextWriter(t MessageType) (io.WriteCloser, error) {
+	if c == nil {
+		return nil, fmt.Errorf("called nextWriter on nil serverConn NOT HEALTHY")
+	}
 	switch c.getState() {
 	case stateUpgrading:
 		for i := 0; i < 30; i++ {
@@ -149,6 +165,13 @@ func (c *serverConn) NextWriter(t MessageType) (io.WriteCloser, error) {
 		return nil, io.EOF
 	}
 	c.writerLocker.Lock()
+	// we got a crash that looks like this
+	// (*serverConn).NextWriter(0xc42161fc70, 0x0, 0xc42462fcb0, 0x403355, 0xc420b90960, 0xc42462fcd0)
+
+	if curr := c.getCurrent(); curr == nil {
+		return nil, fmt.Errorf("current is nil, NOT HEALTHY")
+	}
+
 	ret, err := c.getCurrent().NextWriter(message.MessageType(t), parser.MESSAGE)
 	if err != nil {
 		c.writerLocker.Unlock()
@@ -159,7 +182,9 @@ func (c *serverConn) NextWriter(t MessageType) (io.WriteCloser, error) {
 }
 
 func (c *serverConn) Close() error {
-	if c.getState() != stateNormal && c.getState() != stateUpgrading {
+	s := c.getState()
+	switch s {
+	case stateNormal, stateUpgrading:
 		return nil
 	}
 	if c.upgrading != nil {
@@ -176,6 +201,13 @@ func (c *serverConn) Close() error {
 		return err
 	}
 	c.setState(stateClosing)
+	select {
+	case c.readerShutdown <- struct{}{}:
+		// signal the nextReader to stop waiting for data that will never arrive.
+	default:
+		// we already have signalled that the reader should quit
+	}
+
 	return nil
 }
 
@@ -229,7 +261,7 @@ func (c *serverConn) OnPacket(r *parser.PacketDecoder) {
 		if s := c.getState(); s != stateNormal && s != stateUpgrading {
 			return
 		}
-		c.pingChan <- true
+		c.pingChan <- struct{}{}
 	case parser.MESSAGE:
 		closeChan := make(chan struct{})
 		c.readerChan <- newConnReader(r, closeChan)
@@ -266,6 +298,7 @@ func (c *serverConn) OnClose(server transport.Server) {
 	}
 	c.setState(stateClosed)
 	safeRun(func() { close(c.readerChan) })
+	safeRun(func() { close(c.readerShutdown) })
 	c.pingLocker.Lock()
 	safeRun(func() { close(c.pingChan) })
 	c.pingLocker.Unlock()
@@ -340,6 +373,12 @@ func (c *serverConn) setUpgrading(name string, s transport.Server) {
 func (c *serverConn) upgraded() {
 	c.transportLocker.Lock()
 
+	//  prevent double upgrade from killing the connection
+	if c.upgrading == nil {
+		c.transportLocker.Unlock()
+		return
+	}
+
 	current := c.current
 	c.current = c.upgrading
 	c.currentName = c.upgradingName
@@ -371,14 +410,15 @@ func (c *serverConn) pingLoop() {
 		now := time.Now()
 		pingDiff := now.Sub(lastPing)
 		tryDiff := now.Sub(lastTry)
+		alarm := time.NewTimer(c.pingInterval - tryDiff)
+		timeout := time.NewTimer(c.pingTimeout - pingDiff)
 		select {
-		case ok := <-c.pingChan:
-			if !ok {
-				return
-			}
+		case <-c.pingChan:
 			lastPing = time.Now()
 			lastTry = lastPing
-		case <-time.After(c.pingInterval - tryDiff):
+			alarm.Stop()
+			timeout.Stop()
+		case <-alarm.C:
 			c.writerLocker.Lock()
 			if w, _ := c.getCurrent().NextWriter(message.MessageText, parser.PING); w != nil {
 				writer := newConnWriter(w, &c.writerLocker)
@@ -387,8 +427,10 @@ func (c *serverConn) pingLoop() {
 				c.writerLocker.Unlock()
 			}
 			lastTry = time.Now()
-		case <-time.After(c.pingTimeout - pingDiff):
+			timeout.Stop()
+		case <-timeout.C:
 			c.Close()
+			alarm.Stop()
 			return
 		}
 	}
