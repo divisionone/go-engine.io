@@ -75,10 +75,10 @@ type serverConn struct {
 	state           state
 	stateLocker     sync.RWMutex
 	readerChan      chan *connReader
-	readerShutdown  chan bool
+	readerShutdown  chan struct{}
 	pingTimeout     time.Duration
 	pingInterval    time.Duration
-	pingChan        chan bool
+	pingChan        chan struct{}
 	pingLocker      sync.Mutex
 }
 
@@ -96,10 +96,10 @@ func newServerConn(id string, w http.ResponseWriter, r *http.Request, callback s
 		callback:       callback,
 		state:          stateNormal,
 		readerChan:     make(chan *connReader),
-		readerShutdown: make(chan bool),
+		readerShutdown: make(chan struct{}),
 		pingTimeout:    callback.configure().PingTimeout,
 		pingInterval:   callback.configure().PingInterval,
-		pingChan:       make(chan bool),
+		pingChan:       make(chan struct{}),
 	}
 	transport, err := creater.Server(w, r, ret)
 	if err != nil {
@@ -140,7 +140,6 @@ func (c *serverConn) NextReader() (MessageType, io.ReadCloser, error) {
 		}
 		return MessageType(ret.MessageType()), ret, nil
 	case <-c.readerShutdown:
-		fmt.Println("underlying socket has closed, and we missed the memo !!")
 		return MessageBinary, nil, io.EOF
 	}
 	return MessageBinary, nil, io.EOF
@@ -203,7 +202,7 @@ func (c *serverConn) Close() error {
 	}
 	c.setState(stateClosing)
 	select {
-	case c.readerShutdown <- true:
+	case c.readerShutdown <- struct{}{}:
 		// signal the nextReader to stop waiting for data that will never arrive.
 	default:
 		// we already have signalled that the reader should quit
@@ -262,7 +261,7 @@ func (c *serverConn) OnPacket(r *parser.PacketDecoder) {
 		if s := c.getState(); s != stateNormal && s != stateUpgrading {
 			return
 		}
-		c.pingChan <- true
+		c.pingChan <- struct{}{}
 	case parser.MESSAGE:
 		closeChan := make(chan struct{})
 		c.readerChan <- newConnReader(r, closeChan)
@@ -299,6 +298,7 @@ func (c *serverConn) OnClose(server transport.Server) {
 	}
 	c.setState(stateClosed)
 	safeRun(func() { close(c.readerChan) })
+	safeRun(func() { close(c.readerShutdown) })
 	c.pingLocker.Lock()
 	safeRun(func() { close(c.pingChan) })
 	c.pingLocker.Unlock()
@@ -410,14 +410,15 @@ func (c *serverConn) pingLoop() {
 		now := time.Now()
 		pingDiff := now.Sub(lastPing)
 		tryDiff := now.Sub(lastTry)
+		alarm := time.NewTimer(c.pingInterval - tryDiff)
+		timeout := time.NewTimer(c.pingTimeout - pingDiff)
 		select {
-		case ok := <-c.pingChan:
-			if !ok {
-				return
-			}
+		case <-c.pingChan:
 			lastPing = time.Now()
 			lastTry = lastPing
-		case <-time.After(c.pingInterval - tryDiff):
+			alarm.Stop()
+			timeout.Stop()
+		case <-alarm.C:
 			c.writerLocker.Lock()
 			if w, _ := c.getCurrent().NextWriter(message.MessageText, parser.PING); w != nil {
 				writer := newConnWriter(w, &c.writerLocker)
@@ -426,8 +427,10 @@ func (c *serverConn) pingLoop() {
 				c.writerLocker.Unlock()
 			}
 			lastTry = time.Now()
-		case <-time.After(c.pingTimeout - pingDiff):
+			timeout.Stop()
+		case <-timeout.C:
 			c.Close()
+			alarm.Stop()
 			return
 		}
 	}
