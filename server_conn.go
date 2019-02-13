@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -351,7 +352,7 @@ func (c *serverConn) upgraded() {
 	// both current and upgrading to nil
 	if c.upgrading == nil {
 		// should print a log here, but there is no logger accessible
-		log.
+		log.Println(time.Now(), "double upgrade from", c.request.RemoteAddr)
 		return
 	}
 	c.transportLocker.Lock()
