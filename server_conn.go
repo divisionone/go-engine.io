@@ -135,7 +135,7 @@ func (c *serverConn) NextReader() (MessageType, io.ReadCloser, error) {
 func (c *serverConn) NextWriter(t MessageType) (io.WriteCloser, error) {
 	// just to be sure
 	if c == nil {
-		return nil, fmt.Errorf("called nextWriter on nil serverConn NOT HEALTHY")
+		return nil, fmt.Errorf("called nextWriter on nil serverConn")
 	}
 	switch c.getState() {
 	case stateUpgrading:
@@ -154,7 +154,7 @@ func (c *serverConn) NextWriter(t MessageType) (io.WriteCloser, error) {
 	}
 	c.writerLocker.Lock()
 	if curr := c.getCurrent(); curr == nil {
-		return nil, fmt.Errorf("current is nil, NOT HEALTHY")
+		return nil, fmt.Errorf("current socket is nil")
 	}
 	// we got a crash that looks like this
 	// (*serverConn).NextWriter(0xc42161fc70, 0x0, 0xc42462fcb0, 0x403355, 0xc420b90960, 0xc42462fcd0)
@@ -352,6 +352,7 @@ func (c *serverConn) upgraded() {
 	// prevent double upgrade from crashing NextWriter() due to setting
 	// both current and upgrading to nil
 	if c.upgrading == nil {
+		// should print a log here, but there is no logger accessible
 		c.transportLocker.Unlock()
 		return
 	}
