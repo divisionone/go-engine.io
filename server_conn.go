@@ -133,9 +133,8 @@ func (c *serverConn) NextReader() (MessageType, io.ReadCloser, error) {
 }
 
 func (c *serverConn) NextWriter(t MessageType) (io.WriteCloser, error) {
-	// just to be sure
 	if c == nil {
-		return nil, fmt.Errorf("called nextWriter on nil serverConn")
+		return nil, errors.New("serverConn.NextWriter() with nil serverConn")
 	}
 	switch c.getState() {
 	case stateUpgrading:
@@ -348,14 +347,14 @@ func (c *serverConn) setUpgrading(name string, s transport.Server) {
 }
 
 func (c *serverConn) upgraded() {
-	c.transportLocker.Lock()
 	// prevent double upgrade from crashing NextWriter() due to setting
 	// both current and upgrading to nil
 	if c.upgrading == nil {
 		// should print a log here, but there is no logger accessible
-		c.transportLocker.Unlock()
+		log.
 		return
 	}
+	c.transportLocker.Lock()
 	current := c.current
 	c.current = c.upgrading
 	c.currentName = c.upgradingName
