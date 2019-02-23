@@ -133,6 +133,9 @@ func (c *serverConn) NextReader() (MessageType, io.ReadCloser, error) {
 }
 
 func (c *serverConn) NextWriter(t MessageType) (io.WriteCloser, error) {
+	if c == nil {
+		return nil, errors.New("serverConn.NextWriter() with nil serverConn")
+	}
 	switch c.getState() {
 	case stateUpgrading:
 		for i := 0; i < 30; i++ {
@@ -149,6 +152,12 @@ func (c *serverConn) NextWriter(t MessageType) (io.WriteCloser, error) {
 		return nil, io.EOF
 	}
 	c.writerLocker.Lock()
+	if curr := c.getCurrent(); curr == nil {
+		return nil, fmt.Errorf("current socket is nil")
+	}
+	// we got a crash that looks like this
+	// (*serverConn).NextWriter(0xc42161fc70, 0x0, 0xc42462fcb0, 0x403355, 0xc420b90960, 0xc42462fcd0)
+	// so it means that c.getCurrent() is nil. boom.
 	ret, err := c.getCurrent().NextWriter(message.MessageType(t), parser.MESSAGE)
 	if err != nil {
 		c.writerLocker.Unlock()
@@ -338,8 +347,12 @@ func (c *serverConn) setUpgrading(name string, s transport.Server) {
 }
 
 func (c *serverConn) upgraded() {
+	// prevent double upgrade from crashing NextWriter() due to setting
+	// both current and upgrading to nil
+	if c.upgrading == nil {
+		return
+	}
 	c.transportLocker.Lock()
-
 	current := c.current
 	c.current = c.upgrading
 	c.currentName = c.upgradingName

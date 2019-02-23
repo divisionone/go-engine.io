@@ -2,6 +2,7 @@ package polling
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -75,6 +76,9 @@ func (c *client) NextReader() (*parser.PacketDecoder, error) {
 }
 
 func (c *client) NextWriter(messageType message.MessageType, packetType parser.PacketType) (io.WriteCloser, error) {
+	if c == nil {
+		return nil, errors.New("client.NextWriter with nil client")
+	}
 	if c.state != stateNormal {
 		return nil, io.EOF
 	}
