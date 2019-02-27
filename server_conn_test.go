@@ -205,6 +205,8 @@ func TestConn(t *testing.T) {
 
 			err = conn.Close()
 			So(err, ShouldBeNil)
+			err = conn.Close()
+			So(err, ShouldBeNil)
 
 			time.Sleep(time.Second)
 
