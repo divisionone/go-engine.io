@@ -78,7 +78,6 @@ type serverConn struct {
 	pingTimeout     time.Duration
 	pingInterval    time.Duration
 	pingChan        chan bool
-	pingLocker      sync.Mutex
 }
 
 var InvalidError = errors.New("invalid transport")
@@ -224,12 +223,14 @@ func (c *serverConn) OnPacket(r *parser.PacketDecoder) {
 		c.writerLocker.Unlock()
 		fallthrough
 	case parser.PONG:
-		c.pingLocker.Lock()
-		defer c.pingLocker.Unlock()
 		if s := c.getState(); s != stateNormal && s != stateUpgrading {
 			return
 		}
-		c.pingChan <- true
+		select {
+		case c.pingChan <- true:
+		default:
+			// cant write to the pingchan - something must have closed it
+		}
 	case parser.MESSAGE:
 		closeChan := make(chan struct{})
 		c.readerChan <- newConnReader(r, closeChan)
@@ -266,9 +267,7 @@ func (c *serverConn) OnClose(server transport.Server) {
 	}
 	c.setState(stateClosed)
 	safeRun(func() { close(c.readerChan) })
-	c.pingLocker.Lock()
 	safeRun(func() { close(c.pingChan) })
-	c.pingLocker.Unlock()
 	c.callback.onClose(c.id)
 }
 
@@ -379,7 +378,7 @@ func (c *serverConn) pingLoop() {
 		select {
 		case ok := <-c.pingChan:
 			if !ok {
-				return
+				return // pingChan has been closed, we are done here
 			}
 			lastPing = time.Now()
 			lastTry = lastPing

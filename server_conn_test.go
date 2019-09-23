@@ -203,6 +203,9 @@ func TestConn(t *testing.T) {
 			So(server.closed[id], ShouldEqual, 1)
 			server.closedLocker.Unlock()
 
+			// test double close
+			err = conn.Close()
+			So(err, ShouldBeNil)
 			err = conn.Close()
 			So(err, ShouldBeNil)
 
